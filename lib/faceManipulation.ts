@@ -25,10 +25,37 @@ export class FaceManipulator {
   }
 
   setOriginalImage(image: HTMLImageElement) {
-    this.canvas.width = image.width;
-    this.canvas.height = image.height;
-    this.ctx.drawImage(image, 0, 0);
-    this.originalImageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+    // Scale down image if too large for better performance
+    const maxWidth = 1920;
+    const maxHeight = 1080;
+
+    let width = image.width;
+    let height = image.height;
+
+    // Calculate scale factor
+    if (width > maxWidth || height > maxHeight) {
+      const scaleX = maxWidth / width;
+      const scaleY = maxHeight / height;
+      const scale = Math.min(scaleX, scaleY);
+
+      width = Math.floor(width * scale);
+      height = Math.floor(height * scale);
+    }
+
+    // Set canvas size
+    this.canvas.width = width;
+    this.canvas.height = height;
+
+    // Clear canvas
+    this.ctx.clearRect(0, 0, width, height);
+
+    // Draw image with scaling
+    this.ctx.drawImage(image, 0, 0, width, height);
+
+    // Save original image data
+    this.originalImageData = this.ctx.getImageData(0, 0, width, height);
+
+    console.log(`Canvas set to ${width}x${height} (original: ${image.width}x${image.height})`);
   }
 
   applyAdjustments(landmarks: FaceLandmarks, adjustments: FaceAdjustments) {

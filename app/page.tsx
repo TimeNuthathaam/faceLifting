@@ -51,12 +51,18 @@ export default function Home() {
     };
   }, []);
 
-  // Initialize canvas manipulator
+  // Initialize/re-initialize canvas manipulator when image changes
   useEffect(() => {
-    if (canvasRef.current && !manipulatorRef.current) {
+    if (image && canvasRef.current) {
+      // Create new manipulator for the canvas
       manipulatorRef.current = new FaceManipulator(canvasRef.current);
+
+      // Set the original image
+      manipulatorRef.current.setOriginalImage(image);
+
+      console.log('Canvas initialized with image');
     }
-  }, []);
+  }, [image]);
 
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -67,12 +73,11 @@ export default function Home() {
 
     try {
       const img = new Image();
+      img.crossOrigin = 'anonymous';
       img.src = URL.createObjectURL(file);
 
       img.onload = async () => {
-        setImage(img);
-
-        // Detect faces
+        // Detect faces first from original image
         if (!faceDetectionService.isReady()) {
           setError('Model not ready. Please wait...');
           setIsProcessing(false);
@@ -91,14 +96,42 @@ export default function Home() {
           console.warn('Multiple faces detected. Using the first face.');
         }
 
-        setLandmarks(faces[0]);
+        const detectedLandmarks = faces[0];
 
-        // Set up canvas with original image
-        if (manipulatorRef.current) {
-          manipulatorRef.current.setOriginalImage(img);
-        }
+        // Set image state (will trigger useEffect to setup canvas)
+        setImage(img);
 
-        setIsProcessing(false);
+        // Wait for canvas to be ready, then scale landmarks
+        setTimeout(() => {
+          if (canvasRef.current) {
+            const canvas = canvasRef.current;
+            const scaleX = canvas.width / img.width;
+            const scaleY = canvas.height / img.height;
+
+            console.log(`Scaling landmarks: ${scaleX.toFixed(3)}x, ${scaleY.toFixed(3)}x`);
+
+            // Scale landmarks to match canvas size
+            const scaledLandmarks: FaceLandmarks = {
+              keypoints: detectedLandmarks.keypoints.map((kp) => ({
+                ...kp,
+                x: kp.x * scaleX,
+                y: kp.y * scaleY,
+                z: kp.z ? kp.z * scaleX : undefined,
+              })),
+              box: {
+                xMin: detectedLandmarks.box.xMin * scaleX,
+                yMin: detectedLandmarks.box.yMin * scaleY,
+                xMax: detectedLandmarks.box.xMax * scaleX,
+                yMax: detectedLandmarks.box.yMax * scaleY,
+                width: detectedLandmarks.box.width * scaleX,
+                height: detectedLandmarks.box.height * scaleY,
+              },
+            };
+
+            setLandmarks(scaledLandmarks);
+          }
+          setIsProcessing(false);
+        }, 100);
       };
 
       img.onerror = () => {
@@ -282,11 +315,11 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="relative bg-gray-100 dark:bg-gray-900 rounded-lg overflow-hidden">
+                <div className="relative bg-gray-100 dark:bg-gray-900 rounded-lg overflow-hidden min-h-[400px] flex items-center justify-center">
                   <canvas
                     ref={canvasRef}
-                    className="max-w-full h-auto mx-auto"
-                    style={{ maxHeight: '70vh' }}
+                    className="max-w-full h-auto mx-auto block"
+                    style={{ maxHeight: '70vh', display: 'block' }}
                   />
                 </div>
 
