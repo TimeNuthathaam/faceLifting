@@ -15,6 +15,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [lightingAnalysis, setLightingAnalysis] = useState<LightingAnalysis | null>(null);
   const [isAnalyzingLighting, setIsAnalyzingLighting] = useState(false);
+  const [fixCount, setFixCount] = useState(0);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -137,6 +138,27 @@ export default function Home() {
             };
 
             setLandmarks(scaledLandmarks);
+
+            // Auto-apply lighting fix after face detection
+            setTimeout(async () => {
+              if (canvasRef.current && manipulatorRef.current) {
+                try {
+                  setIsAnalyzingLighting(true);
+                  const imageDataUrl = canvasRef.current.toDataURL('image/jpeg', 0.9);
+                  const analysis = await analyzeLighting(imageDataUrl);
+                  setLightingAnalysis(analysis);
+
+                  // Apply initial fix (fixCount = 0)
+                  manipulatorRef.current.applyGeminiLightingFix(scaledLandmarks, analysis, 0);
+                  setFixCount(1); // Set to 1 after first auto-fix
+                  console.log('Auto-applied lighting fix');
+                } catch (err) {
+                  console.error('Auto fix lighting error:', err);
+                } finally {
+                  setIsAnalyzingLighting(false);
+                }
+              }
+            }, 200);
           }
           setIsProcessing(false);
         }, 100);
@@ -210,14 +232,15 @@ export default function Home() {
     setLandmarks(null);
     setError(null);
     setLightingAnalysis(null);
+    setFixCount(0);
     handleReset();
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
-  const handleAutoFixLighting = async () => {
-    if (!canvasRef.current || !image || !landmarks || !manipulatorRef.current) {
+  const handleFixMore = async () => {
+    if (!canvasRef.current || !image || !landmarks || !manipulatorRef.current || !lightingAnalysis) {
       return;
     }
 
@@ -225,24 +248,16 @@ export default function Home() {
     setError(null);
 
     try {
-      // Get current canvas as data URL
-      const imageDataUrl = canvasRef.current.toDataURL('image/jpeg', 0.9);
+      // Apply progressive fix with increased intensity
+      manipulatorRef.current.applyGeminiLightingFix(landmarks, lightingAnalysis, fixCount);
 
-      // Analyze lighting with Gemini AI
-      const analysis = await analyzeLighting(imageDataUrl);
-      setLightingAnalysis(analysis);
+      // Increment fix count for next time
+      setFixCount(prev => prev + 1);
 
-      console.log('Gemini Analysis:', analysis);
-
-      // Apply Gemini's lighting fix
-      manipulatorRef.current.applyGeminiLightingFix(landmarks, analysis);
-
-      // Show success message with analysis description
-      const description = getAnalysisDescription(analysis);
-      console.log('Applied:', description);
+      console.log(`Applied Fix More (count: ${fixCount})`);
     } catch (err) {
-      console.error('Auto fix lighting error:', err);
-      setError('Failed to analyze lighting. Please try again.');
+      console.error('Fix more error:', err);
+      setError('Failed to apply additional fix. Please try again.');
     } finally {
       setIsAnalyzingLighting(false);
     }
@@ -345,20 +360,22 @@ export default function Home() {
                     Preview
                   </h2>
                   <div className="flex gap-2 flex-wrap">
-                    <button
-                      onClick={handleAutoFixLighting}
-                      disabled={isAnalyzingLighting || !landmarks}
-                      className="px-4 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors duration-200 text-sm font-medium flex items-center gap-2"
-                    >
-                      {isAnalyzingLighting ? (
-                        <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                          Analyzing...
-                        </>
-                      ) : (
-                        <>🤖 Auto Fix Lighting</>
-                      )}
-                    </button>
+                    {lightingAnalysis && (
+                      <button
+                        onClick={handleFixMore}
+                        disabled={isAnalyzingLighting || !landmarks}
+                        className="px-4 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors duration-200 text-sm font-medium flex items-center gap-2"
+                      >
+                        {isAnalyzingLighting ? (
+                          <>
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            Applying...
+                          </>
+                        ) : (
+                          <>🔧 Fix More</>
+                        )}
+                      </button>
+                    )}
                     <button
                       onClick={handleSave}
                       className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors duration-200 text-sm font-medium flex items-center gap-2"
@@ -389,18 +406,21 @@ export default function Home() {
                 )}
 
                 {lightingAnalysis && (
-                  <div className="mt-3 p-3 bg-purple-50 dark:bg-purple-900/30 border border-purple-200 dark:border-purple-800 rounded-lg">
-                    <div className="text-sm font-semibold text-purple-800 dark:text-purple-200 mb-1">
-                      🤖 AI Lighting Analysis
+                  <div className="mt-3 p-3 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-lg">
+                    <div className="text-sm font-semibold text-green-800 dark:text-green-200 mb-2">
+                      ✅ แสงถูกปรับให้เท่ากันอัตโนมัติแล้ว
                     </div>
-                    <div className="text-sm text-purple-700 dark:text-purple-300">
-                      {getAnalysisDescription(lightingAnalysis)}
+                    <div className="text-xs text-green-700 dark:text-green-300 mb-2">
+                      ปรับแสงจากแบบ studio ให้เป็นธรรมชาติแล้ว {fixCount} ครั้ง
                     </div>
-                    {lightingAnalysis.brightnessAnalysis && (
-                      <div className="text-xs text-purple-600 dark:text-purple-400 mt-1">
-                        {lightingAnalysis.brightnessAnalysis}
-                      </div>
-                    )}
+                    <div className="flex items-center justify-between pt-2 border-t border-green-200 dark:border-green-700">
+                      <span className="text-sm text-green-800 dark:text-green-200">
+                        พอแล้วหรือยัง?
+                      </span>
+                      <span className="text-xs text-green-600 dark:text-green-400">
+                        ยังไม่พอ → กด "🔧 Fix More"
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>

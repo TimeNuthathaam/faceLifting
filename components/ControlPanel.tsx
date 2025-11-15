@@ -27,9 +27,7 @@ const sliderConfigs: SliderConfig[] = [
   { key: 'forehead', label: 'Forehead', labelThai: 'หน้าผาก', icon: '🧠', min: -100, max: 100 },
   { key: 'cheekbones', label: 'Cheekbones', labelThai: 'โหนกแก้ม', icon: '💎', min: -100, max: 100 },
   { key: 'faceWidth', label: 'Face Width', labelThai: 'ความกว้างใบหน้า', icon: '↔️', min: -100, max: 100 },
-  // Lighting Adjustments Section
-  { key: 'dodge', label: 'Dodge (Lighten)', labelThai: 'เพิ่มความสว่าง', icon: '☀️', min: -100, max: 100 },
-  { key: 'burn', label: 'Burn (Darken)', labelThai: 'ลดความสว่าง', icon: '🌙', min: -100, max: 100 },
+  // Effects Section
   { key: 'clarity', label: 'Clarity', labelThai: 'ความคมชัด', icon: '✨', min: -100, max: 100 },
   { key: 'contrast', label: 'Contrast', labelThai: 'คอนทราสต์', icon: '🎨', min: -100, max: 100 },
 ];
@@ -66,7 +64,7 @@ export default function ControlPanel({
             )}
             {index === 7 && (
               <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-3 pb-2 mt-4 border-b border-gray-300 dark:border-gray-600">
-                💡 Lighting & Effects
+                ✨ Effects
               </h3>
             )}
 

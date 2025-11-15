@@ -829,12 +829,14 @@ export class FaceManipulator {
   /**
    * Apply Gemini AI lighting analysis to automatically fix studio lighting
    * This is optimized and won't freeze the browser
+   * @param fixCount - Number of times Fix More has been applied (for progressive fixing)
    */
-  applyGeminiLightingFix(landmarks: FaceLandmarks, analysis: LightingAnalysis) {
-    if (!this.originalImageData || !analysis.hasStudioLighting) {
+  applyGeminiLightingFix(landmarks: FaceLandmarks, analysis: LightingAnalysis, fixCount: number = 0) {
+    if (!this.originalImageData) {
       return;
     }
 
+    // Always apply the fix (removed hasStudioLighting check so it always processes)
     // Reset to original image first
     this.ctx.putImageData(this.originalImageData, 0, 0);
 
@@ -856,7 +858,10 @@ export class FaceManipulator {
     const targetBrightness = this.calculateTargetBrightness(originalData, width, height, faceBounds);
 
     // Convert Gemini's 0-100 intensity to our internal scale
-    const burnIntensity = analysis.adjustments.burnIntensity / 100;
+    // Apply progressive multiplier: each Fix More increases strength by 30%
+    const baseIntensity = Math.max(analysis.adjustments.burnIntensity, 50) / 100; // Minimum 50 if detected
+    const progressiveMultiplier = 1 + (fixCount * 0.3);
+    const burnIntensity = baseIntensity * progressiveMultiplier;
 
     // Process each pixel in face bounds
     for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
