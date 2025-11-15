@@ -342,10 +342,16 @@ export class FaceManipulator {
     dodge: number,
     burn: number
   ) {
-    // Step 1: Analyze the actual image to find bright areas (highlights)
-    const brightnessMap = this.analyzeBrightness(data, width, height, faceBounds);
+    // Create a copy for reading original values
+    const originalData = new Uint8ClampedArray(data);
 
-    // Step 2: Get landmark-based target areas for reference
+    // Step 1: Calculate local brightness variations (where is light uneven?)
+    const localContrastMap = this.calculateLocalContrast(originalData, width, height, faceBounds);
+
+    // Step 2: Calculate average target brightness for flattening
+    const targetBrightness = this.calculateTargetBrightness(originalData, width, height, faceBounds);
+
+    // Step 3: Get landmark-based zones for reference
     const targetAreas = this.getTargetAreas(landmarks);
 
     for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
@@ -353,17 +359,17 @@ export class FaceManipulator {
         if (x < 0 || x >= width || y < 0 || y >= height) continue;
 
         const idx = (y * width + x) * 4;
-        const r = data[idx];
-        const g = data[idx + 1];
-        const b = data[idx + 2];
+        const r = originalData[idx];
+        const g = originalData[idx + 1];
+        const b = originalData[idx + 2];
 
         // Calculate luminance (perceived brightness)
         const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
 
-        // Get brightness level from analysis (0 to 1, where 1 = brightest)
-        const brightnessLevel = brightnessMap[idx / 4] || 0;
+        // Get local contrast (how much brighter than surroundings?)
+        const localContrast = localContrastMap[y * width + x] || 0;
 
-        // Calculate landmark-based influence
+        // Calculate landmark influence
         let landmarkInfluence = 0;
         for (const area of targetAreas) {
           const dx = x - area.x;
@@ -378,74 +384,171 @@ export class FaceManipulator {
           }
         }
 
-        // Combine brightness-based and landmark-based detection
-        // Brightness-based is primary for BURN (to target actual highlights)
-        // Landmark-based is primary for DODGE (for artistic control)
-        const burnInfluence = Math.max(brightnessLevel * 0.8, landmarkInfluence * 0.4);
-        const dodgeInfluence = Math.max(landmarkInfluence * 0.7, brightnessLevel * 0.3);
+        // BURN: Flatten highlights by bringing them closer to average
+        if (burn > 0) {
+          // Calculate how much brighter this pixel is than target
+          const brightnessDiff = luminance - targetBrightness;
 
-        // Apply Burn (darken bright areas to remove studio lighting)
-        if (burn > 0 && burnInfluence > 0.1) {
-          const burnIntensity = (burn / 100) * burnInfluence;
+          // Only apply to pixels brighter than average
+          if (brightnessDiff > 5) {
+            // Influence based on both local contrast and landmark position
+            const influence = Math.max(
+              localContrast * 0.9,        // Primary: actual local brightness variation
+              landmarkInfluence * 0.5      // Secondary: landmark position
+            );
 
-          // Strong effect on very bright pixels (highlights from studio lighting)
-          let targetWeight = 0;
-          if (luminance > 200) {
-            targetWeight = 1.0; // Maximum effect on very bright areas
-          } else if (luminance > 170) {
-            targetWeight = 0.9; // Strong effect on bright highlights
-          } else if (luminance > 140) {
-            targetWeight = 0.6; // Moderate effect on upper midtones
-          } else if (luminance > 100) {
-            targetWeight = 0.3; // Gentle effect on midtones
-          }
+            if (influence > 0.05) {
+              const burnIntensity = (burn / 100) * influence;
 
-          if (targetWeight > 0) {
-            // Multiply blending mode with adaptive intensity
-            const finalIntensity = burnIntensity * targetWeight;
-            const multiplier = 1 - (finalIntensity * 0.7); // Increased from 0.6 for stronger effect
+              // How much to reduce brightness (push towards target)
+              const reductionAmount = brightnessDiff * burnIntensity * 0.8;
 
-            data[idx] = Math.max(0, Math.round(r * multiplier));
-            data[idx + 1] = Math.max(0, Math.round(g * multiplier));
-            data[idx + 2] = Math.max(0, Math.round(b * multiplier));
+              // Calculate target luminance after reduction
+              const targetLum = luminance - reductionAmount;
+              const ratio = targetLum / Math.max(luminance, 1);
+
+              // Apply ratio to all color channels (preserve color, reduce brightness)
+              data[idx] = Math.max(0, Math.min(255, Math.round(r * ratio)));
+              data[idx + 1] = Math.max(0, Math.min(255, Math.round(g * ratio)));
+              data[idx + 2] = Math.max(0, Math.min(255, Math.round(b * ratio)));
+            }
           }
         }
 
-        // Apply Dodge (lighten for artistic enhancement)
-        if (dodge > 0 && dodgeInfluence > 0.1) {
-          const dodgeIntensity = (dodge / 100) * dodgeInfluence;
+        // DODGE: Brighten dark areas for artistic enhancement
+        if (dodge > 0 && landmarkInfluence > 0.1) {
+          const dodgeIntensity = (dodge / 100) * landmarkInfluence;
 
-          // Best on upper midtones, avoid overexposed areas
+          // Best effect on midtones, avoid already bright areas
           let targetWeight = 0;
-          if (luminance > 200) {
-            targetWeight = 0.3; // Minimal on very bright (already bright)
-          } else if (luminance > 140) {
-            targetWeight = 0.7; // Moderate on highlights
-          } else if (luminance > 100) {
-            targetWeight = 1.0; // Maximum on upper midtones
-          } else if (luminance > 70) {
-            targetWeight = 0.8; // Good on midtones
-          }
+          const currentR = data[idx];
+          const currentG = data[idx + 1];
+          const currentB = data[idx + 2];
+          const currentLum = 0.299 * currentR + 0.587 * currentG + 0.114 * currentB;
 
-          if (targetWeight > 0) {
-            const finalIntensity = dodgeIntensity * targetWeight;
+          if (currentLum < 180 && currentLum > 60) {
+            if (currentLum > 120) {
+              targetWeight = 0.8;
+            } else {
+              targetWeight = 1.0;
+            }
 
-            // Screen blending mode
-            const invR = 255 - r;
-            const invG = 255 - g;
-            const invB = 255 - b;
+            if (targetWeight > 0) {
+              const finalIntensity = dodgeIntensity * targetWeight;
 
-            const screenR = 255 - (invR * (1 - finalIntensity * 0.6));
-            const screenG = 255 - (invG * (1 - finalIntensity * 0.6));
-            const screenB = 255 - (invB * (1 - finalIntensity * 0.6));
+              // Screen blending mode
+              const invR = 255 - currentR;
+              const invG = 255 - currentG;
+              const invB = 255 - currentB;
 
-            data[idx] = Math.min(255, Math.round(screenR));
-            data[idx + 1] = Math.min(255, Math.round(screenG));
-            data[idx + 2] = Math.min(255, Math.round(screenB));
+              const screenR = 255 - (invR * (1 - finalIntensity * 0.6));
+              const screenG = 255 - (invG * (1 - finalIntensity * 0.6));
+              const screenB = 255 - (invB * (1 - finalIntensity * 0.6));
+
+              data[idx] = Math.min(255, Math.round(screenR));
+              data[idx + 1] = Math.min(255, Math.round(screenG));
+              data[idx + 2] = Math.min(255, Math.round(screenB));
+            }
           }
         }
       }
     }
+  }
+
+  private calculateLocalContrast(
+    data: Uint8ClampedArray,
+    width: number,
+    height: number,
+    faceBounds: { xMin: number; yMin: number; xMax: number; yMax: number; width: number; height: number }
+  ): Float32Array {
+    const contrastMap = new Float32Array(width * height);
+    const radius = 15; // Neighborhood radius for local comparison
+
+    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
+      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        const idx = (y * width + x) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const centerLum = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        // Calculate average luminance in neighborhood
+        let sumLum = 0;
+        let count = 0;
+
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+
+            if (nx >= Math.floor(faceBounds.xMin) && nx < Math.ceil(faceBounds.xMax) &&
+                ny >= Math.floor(faceBounds.yMin) && ny < Math.ceil(faceBounds.yMax)) {
+
+              const nidx = (ny * width + nx) * 4;
+              const nr = data[nidx];
+              const ng = data[nidx + 1];
+              const nb = data[nidx + 2];
+              const nLum = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              if (distance <= radius) {
+                const weight = Math.exp(-(distance * distance) / (2 * (radius / 2) * (radius / 2)));
+                sumLum += nLum * weight;
+                count += weight;
+              }
+            }
+          }
+        }
+
+        const avgLum = count > 0 ? sumLum / count : centerLum;
+
+        // How much brighter is this pixel than its neighborhood?
+        const diff = centerLum - avgLum;
+
+        // Normalize to 0-1 range (0 = same as neighbors, 1 = much brighter)
+        let contrast = 0;
+        if (diff > 0) {
+          // Brighter than surroundings
+          contrast = Math.min(1.0, diff / 80); // 80 luminance units = full contrast
+        }
+
+        contrastMap[y * width + x] = contrast;
+      }
+    }
+
+    return contrastMap;
+  }
+
+  private calculateTargetBrightness(
+    data: Uint8ClampedArray,
+    width: number,
+    height: number,
+    faceBounds: { xMin: number; yMin: number; xMax: number; yMax: number; width: number; height: number }
+  ): number {
+    const luminanceValues: number[] = [];
+
+    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
+      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        const idx = (y * width + x) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        luminanceValues.push(luminance);
+      }
+    }
+
+    // Use median instead of mean for robustness against outliers
+    luminanceValues.sort((a, b) => a - b);
+    const median = luminanceValues[Math.floor(luminanceValues.length / 2)];
+
+    // Target is slightly below median to create natural look
+    return median * 0.95;
   }
 
   private analyzeBrightness(
