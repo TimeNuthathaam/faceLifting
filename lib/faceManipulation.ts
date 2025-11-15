@@ -1,4 +1,5 @@
 import { FaceLandmarks } from './faceDetection';
+import { LightingAnalysis } from './geminiService';
 
 export interface FaceAdjustments {
   slimFace: number;        // -100 to 100
@@ -823,6 +824,181 @@ export class FaceManipulator {
         }
       }
     }
+  }
+
+  /**
+   * Apply Gemini AI lighting analysis to automatically fix studio lighting
+   * This is optimized and won't freeze the browser
+   */
+  applyGeminiLightingFix(landmarks: FaceLandmarks, analysis: LightingAnalysis) {
+    if (!this.originalImageData || !analysis.hasStudioLighting) {
+      return;
+    }
+
+    // Reset to original image first
+    this.ctx.putImageData(this.originalImageData, 0, 0);
+
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    const imageData = this.ctx.getImageData(0, 0, width, height);
+    const data = imageData.data;
+
+    // Create a copy for reading original values
+    const originalData = new Uint8ClampedArray(data);
+
+    // Get face bounds
+    const faceBounds = landmarks.box;
+
+    // Map hotspot areas to facial landmark positions
+    const hotspotZones = this.mapHotspotsToZones(landmarks, analysis.hotspots);
+
+    // Calculate target brightness (median of face area)
+    const targetBrightness = this.calculateTargetBrightness(originalData, width, height, faceBounds);
+
+    // Convert Gemini's 0-100 intensity to our internal scale
+    const burnIntensity = analysis.adjustments.burnIntensity / 100;
+
+    // Process each pixel in face bounds
+    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
+      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        const idx = (y * width + x) * 4;
+        const r = originalData[idx];
+        const g = originalData[idx + 1];
+        const b = originalData[idx + 2];
+
+        // Calculate luminance
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        // Calculate influence from hotspot zones
+        let maxInfluence = 0;
+        for (const zone of hotspotZones) {
+          const dx = x - zone.x;
+          const dy = y - zone.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          if (distance < zone.radius) {
+            const normalizedDist = distance / zone.radius;
+            // Smooth falloff using cosine interpolation
+            const cosineWeight = (Math.cos(normalizedDist * Math.PI) + 1) / 2;
+            const influence = cosineWeight * zone.severity;
+            maxInfluence = Math.max(maxInfluence, influence);
+          }
+        }
+
+        // Only apply burn to pixels that are brighter than target
+        const brightnessDiff = luminance - targetBrightness;
+        if (brightnessDiff > 5 && maxInfluence > 0) {
+          // Calculate how much to reduce brightness
+          const reductionAmount = brightnessDiff * burnIntensity * maxInfluence;
+          const targetLum = Math.max(targetBrightness, luminance - reductionAmount);
+
+          // Calculate ratio to preserve color relationships
+          const ratio = targetLum / Math.max(luminance, 1);
+
+          // Apply to all channels
+          data[idx] = Math.max(0, Math.min(255, r * ratio));
+          data[idx + 1] = Math.max(0, Math.min(255, g * ratio));
+          data[idx + 2] = Math.max(0, Math.min(255, b * ratio));
+        }
+      }
+    }
+
+    // Put modified image data back
+    this.ctx.putImageData(imageData, 0, 0);
+  }
+
+  /**
+   * Map Gemini's hotspot area names to facial landmark zones
+   */
+  private mapHotspotsToZones(
+    landmarks: FaceLandmarks,
+    hotspots: Array<{ area: string; severity: number }>
+  ): Array<{ x: number; y: number; radius: number; severity: number }> {
+    const zones: Array<{ x: number; y: number; radius: number; severity: number }> = [];
+    const keypoints = landmarks.keypoints;
+    const faceBounds = landmarks.box;
+    const faceWidth = faceBounds.width;
+    const faceHeight = faceBounds.height;
+
+    for (const hotspot of hotspots) {
+      let zone: { x: number; y: number; radius: number; severity: number } | null = null;
+
+      // Normalize severity to 0-1 range
+      const severity = hotspot.severity / 100;
+
+      switch (hotspot.area) {
+        case 'forehead': {
+          // Forehead is top-center of face
+          const foreheadTop = keypoints.slice(10, 67); // Forehead region landmarks
+          if (foreheadTop.length > 0) {
+            const avgX = foreheadTop.reduce((sum, kp) => sum + kp.x, 0) / foreheadTop.length;
+            const avgY = foreheadTop.reduce((sum, kp) => sum + kp.y, 0) / foreheadTop.length;
+            zone = { x: avgX, y: avgY, radius: faceWidth * 0.25, severity };
+          }
+          break;
+        }
+
+        case 'nose': {
+          // Nose bridge and tip
+          const nose = keypoints.slice(1, 9); // Nose landmarks
+          if (nose.length > 0) {
+            const avgX = nose.reduce((sum, kp) => sum + kp.x, 0) / nose.length;
+            const avgY = nose.reduce((sum, kp) => sum + kp.y, 0) / nose.length;
+            zone = { x: avgX, y: avgY, radius: faceWidth * 0.15, severity };
+          }
+          break;
+        }
+
+        case 'left_cheek': {
+          // Left cheekbone area
+          const leftCheek = keypoints.slice(50, 100); // Approximate left cheek
+          if (leftCheek.length > 0) {
+            const avgX = leftCheek.reduce((sum, kp) => sum + kp.x, 0) / leftCheek.length;
+            const avgY = leftCheek.reduce((sum, kp) => sum + kp.y, 0) / leftCheek.length;
+            zone = { x: avgX, y: avgY, radius: faceWidth * 0.2, severity };
+          }
+          break;
+        }
+
+        case 'right_cheek': {
+          // Right cheekbone area
+          const rightCheek = keypoints.slice(280, 330); // Approximate right cheek
+          if (rightCheek.length > 0) {
+            const avgX = rightCheek.reduce((sum, kp) => sum + kp.x, 0) / rightCheek.length;
+            const avgY = rightCheek.reduce((sum, kp) => sum + kp.y, 0) / rightCheek.length;
+            zone = { x: avgX, y: avgY, radius: faceWidth * 0.2, severity };
+          }
+          break;
+        }
+
+        case 'chin': {
+          // Chin area
+          const chin = keypoints.slice(152, 200); // Chin landmarks
+          if (chin.length > 0) {
+            const avgX = chin.reduce((sum, kp) => sum + kp.x, 0) / chin.length;
+            const avgY = chin.reduce((sum, kp) => sum + kp.y, 0) / chin.length;
+            zone = { x: avgX, y: avgY, radius: faceWidth * 0.18, severity };
+          }
+          break;
+        }
+
+        case 'overall': {
+          // Overall face - use face center
+          const centerX = faceBounds.xMin + faceWidth / 2;
+          const centerY = faceBounds.yMin + faceHeight / 2;
+          zone = { x: centerX, y: centerY, radius: faceWidth * 0.35, severity };
+          break;
+        }
+      }
+
+      if (zone) {
+        zones.push(zone);
+      }
+    }
+
+    return zones;
   }
 
   reset() {

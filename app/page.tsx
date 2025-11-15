@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { faceDetectionService, FaceLandmarks } from '@/lib/faceDetection';
 import { FaceManipulator, FaceAdjustments } from '@/lib/faceManipulation';
+import { analyzeLighting, LightingAnalysis, getAnalysisDescription } from '@/lib/geminiService';
 import ControlPanel from '@/components/ControlPanel';
 
 export default function Home() {
@@ -12,6 +13,8 @@ export default function Home() {
   const [modelLoaded, setModelLoaded] = useState(false);
   const [landmarks, setLandmarks] = useState<FaceLandmarks | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lightingAnalysis, setLightingAnalysis] = useState<LightingAnalysis | null>(null);
+  const [isAnalyzingLighting, setIsAnalyzingLighting] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -206,9 +209,42 @@ export default function Home() {
     setImage(null);
     setLandmarks(null);
     setError(null);
+    setLightingAnalysis(null);
     handleReset();
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+  };
+
+  const handleAutoFixLighting = async () => {
+    if (!canvasRef.current || !image || !landmarks || !manipulatorRef.current) {
+      return;
+    }
+
+    setIsAnalyzingLighting(true);
+    setError(null);
+
+    try {
+      // Get current canvas as data URL
+      const imageDataUrl = canvasRef.current.toDataURL('image/jpeg', 0.9);
+
+      // Analyze lighting with Gemini AI
+      const analysis = await analyzeLighting(imageDataUrl);
+      setLightingAnalysis(analysis);
+
+      console.log('Gemini Analysis:', analysis);
+
+      // Apply Gemini's lighting fix
+      manipulatorRef.current.applyGeminiLightingFix(landmarks, analysis);
+
+      // Show success message with analysis description
+      const description = getAnalysisDescription(analysis);
+      console.log('Applied:', description);
+    } catch (err) {
+      console.error('Auto fix lighting error:', err);
+      setError('Failed to analyze lighting. Please try again.');
+    } finally {
+      setIsAnalyzingLighting(false);
     }
   };
 
@@ -308,7 +344,21 @@ export default function Home() {
                   <h2 className="text-xl font-bold text-gray-800 dark:text-white">
                     Preview
                   </h2>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
+                    <button
+                      onClick={handleAutoFixLighting}
+                      disabled={isAnalyzingLighting || !landmarks}
+                      className="px-4 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors duration-200 text-sm font-medium flex items-center gap-2"
+                    >
+                      {isAnalyzingLighting ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                          Analyzing...
+                        </>
+                      ) : (
+                        <>🤖 Auto Fix Lighting</>
+                      )}
+                    </button>
                     <button
                       onClick={handleSave}
                       className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors duration-200 text-sm font-medium flex items-center gap-2"
@@ -335,6 +385,22 @@ export default function Home() {
                 {landmarks && (
                   <div className="mt-4 text-sm text-gray-600 dark:text-gray-400 text-center">
                     ✅ Face detected with {landmarks.keypoints.length} landmarks
+                  </div>
+                )}
+
+                {lightingAnalysis && (
+                  <div className="mt-3 p-3 bg-purple-50 dark:bg-purple-900/30 border border-purple-200 dark:border-purple-800 rounded-lg">
+                    <div className="text-sm font-semibold text-purple-800 dark:text-purple-200 mb-1">
+                      🤖 AI Lighting Analysis
+                    </div>
+                    <div className="text-sm text-purple-700 dark:text-purple-300">
+                      {getAnalysisDescription(lightingAnalysis)}
+                    </div>
+                    {lightingAnalysis.brightnessAnalysis && (
+                      <div className="text-xs text-purple-600 dark:text-purple-400 mt-1">
+                        {lightingAnalysis.brightnessAnalysis}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
