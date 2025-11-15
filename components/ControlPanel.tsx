@@ -15,16 +15,18 @@ interface SliderConfig {
   label: string;
   labelThai: string;
   icon: string;
+  min: number;
+  max: number;
 }
 
 const sliderConfigs: SliderConfig[] = [
-  { key: 'slimFace', label: 'Slim Face', labelThai: 'หน้าเรียว', icon: '👤' },
-  { key: 'headSize', label: 'Head Size', labelThai: 'ขนาดศีรษะ', icon: '🗣️' },
-  { key: 'jawline', label: 'Jawline', labelThai: 'กราม', icon: '💪' },
-  { key: 'chin', label: 'Chin', labelThai: 'คาง', icon: '🎯' },
-  { key: 'forehead', label: 'Forehead', labelThai: 'หน้าผาก', icon: '🧠' },
-  { key: 'cheekbones', label: 'Cheekbones', labelThai: 'โหนกแก้ม', icon: '💎' },
-  { key: 'faceWidth', label: 'Face Width', labelThai: 'ความกว้างใบหน้า', icon: '↔️' },
+  { key: 'slimFace', label: 'Slim Face', labelThai: 'หน้าเรียว', icon: '👤', min: -100, max: 100 },
+  { key: 'headSize', label: 'Head Size', labelThai: 'ขนาดศีรษะ', icon: '🗣️', min: -100, max: 100 },
+  { key: 'jawline', label: 'Jawline', labelThai: 'กราม', icon: '💪', min: -200, max: 200 },
+  { key: 'chin', label: 'Chin', labelThai: 'คาง', icon: '🎯', min: -100, max: 100 },
+  { key: 'forehead', label: 'Forehead', labelThai: 'หน้าผาก', icon: '🧠', min: -100, max: 100 },
+  { key: 'cheekbones', label: 'Cheekbones', labelThai: 'โหนกแก้ม', icon: '💎', min: -100, max: 100 },
+  { key: 'faceWidth', label: 'Face Width', labelThai: 'ความกว้างใบหน้า', icon: '↔️', min: -100, max: 100 },
 ];
 
 export default function ControlPanel({
@@ -67,8 +69,8 @@ export default function ControlPanel({
             <div className="relative">
               <input
                 type="range"
-                min="-100"
-                max="100"
+                min={config.min}
+                max={config.max}
                 step="1"
                 value={adjustments[config.key]}
                 onChange={(e) => onAdjustmentChange(config.key, Number(e.target.value))}
@@ -86,9 +88,9 @@ export default function ControlPanel({
                 }}
               />
               <div className="flex justify-between text-xs text-gray-500 mt-1">
-                <span>-100</span>
+                <span>{config.min}</span>
                 <span>0</span>
-                <span>+100</span>
+                <span>+{config.max}</span>
               </div>
             </div>
           </div>
