@@ -3,11 +3,16 @@ import { FaceLandmarks } from './faceDetection';
 export interface FaceAdjustments {
   slimFace: number;        // -100 to 100
   headSize: number;        // -100 to 100
-  jawline: number;         // -100 to 100
+  jawline: number;         // -200 to 200
   chin: number;            // -100 to 100
   forehead: number;        // -100 to 100
   cheekbones: number;      // -100 to 100
   faceWidth: number;       // -100 to 100
+  // Lighting adjustments (Dodge & Burn)
+  dodge: number;           // -100 to 100 (increase brightness on highlights)
+  burn: number;            // -100 to 100 (decrease brightness on highlights)
+  clarity: number;         // -100 to 100 (edge enhancement/softening)
+  contrast: number;        // -100 to 100 (overall contrast adjustment)
 }
 
 export class FaceManipulator {
@@ -80,6 +85,9 @@ export class FaceManipulator {
 
     // Apply mesh warping
     this.applyMeshWarping(displacementMap);
+
+    // Apply lighting adjustments (Dodge & Burn)
+    this.applyLightingAdjustments(landmarks, adjustments, faceCenter, faceBounds);
   }
 
   private getFaceCenter(landmarks: FaceLandmarks): { x: number; y: number } {
@@ -287,6 +295,201 @@ export class FaceManipulator {
     }
 
     return result;
+  }
+
+  private applyLightingAdjustments(
+    landmarks: FaceLandmarks,
+    adjustments: FaceAdjustments,
+    faceCenter: { x: number; y: number },
+    faceBounds: { xMin: number; yMin: number; xMax: number; yMax: number; width: number; height: number }
+  ) {
+    const { dodge, burn, clarity, contrast } = adjustments;
+
+    // Skip if no lighting adjustments
+    if (dodge === 0 && burn === 0 && clarity === 0 && contrast === 0) {
+      return;
+    }
+
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    const imageData = this.ctx.getImageData(0, 0, width, height);
+    const data = imageData.data;
+
+    // Define highlight areas (where light hits the face naturally)
+    const highlightAreas = this.getHighlightAreas(landmarks);
+
+    // Apply Dodge & Burn
+    if (dodge !== 0 || burn !== 0) {
+      this.applyDodgeBurn(data, width, height, highlightAreas, faceBounds, dodge, burn);
+    }
+
+    // Apply Clarity (edge enhancement/softening)
+    if (clarity !== 0) {
+      this.applyClarity(data, width, height, faceBounds, clarity);
+    }
+
+    // Apply Contrast
+    if (contrast !== 0) {
+      this.applyContrast(data, width, height, faceBounds, contrast);
+    }
+
+    this.ctx.putImageData(imageData, 0, 0);
+  }
+
+  private getHighlightAreas(landmarks: FaceLandmarks): Array<{ x: number; y: number; radius: number; intensity: number }> {
+    const areas: Array<{ x: number; y: number; radius: number; intensity: number }> = [];
+    const keypoints = landmarks.keypoints;
+
+    // Forehead (top center)
+    if (keypoints[10]) {
+      areas.push({ x: keypoints[10].x, y: keypoints[10].y, radius: 40, intensity: 1.0 });
+    }
+
+    // Nose bridge
+    if (keypoints[6]) {
+      areas.push({ x: keypoints[6].x, y: keypoints[6].y, radius: 25, intensity: 0.9 });
+    }
+
+    // Nose tip
+    if (keypoints[4]) {
+      areas.push({ x: keypoints[4].x, y: keypoints[4].y, radius: 20, intensity: 0.8 });
+    }
+
+    // Left cheekbone
+    if (keypoints[234]) {
+      areas.push({ x: keypoints[234].x, y: keypoints[234].y, radius: 35, intensity: 0.85 });
+    }
+
+    // Right cheekbone
+    if (keypoints[454]) {
+      areas.push({ x: keypoints[454].x, y: keypoints[454].y, radius: 35, intensity: 0.85 });
+    }
+
+    // Chin
+    if (keypoints[152]) {
+      areas.push({ x: keypoints[152].x, y: keypoints[152].y, radius: 30, intensity: 0.7 });
+    }
+
+    return areas;
+  }
+
+  private applyDodgeBurn(
+    data: Uint8ClampedArray,
+    width: number,
+    height: number,
+    highlightAreas: Array<{ x: number; y: number; radius: number; intensity: number }>,
+    faceBounds: { xMin: number; yMin: number; xMax: number; yMax: number; width: number; height: number },
+    dodge: number,
+    burn: number
+  ) {
+    const dodgeFactor = dodge / 100;
+    const burnFactor = burn / 100;
+
+    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
+      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        const idx = (y * width + x) * 4;
+
+        // Calculate influence from all highlight areas
+        let influence = 0;
+        for (const area of highlightAreas) {
+          const dx = x - area.x;
+          const dy = y - area.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          if (distance < area.radius) {
+            const falloff = 1 - (distance / area.radius);
+            const gaussian = Math.exp(-(distance * distance) / (2 * (area.radius / 2) * (area.radius / 2)));
+            influence = Math.max(influence, gaussian * area.intensity * falloff);
+          }
+        }
+
+        if (influence > 0) {
+          // Get original RGB values
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+
+          // Apply dodge (lighten highlights)
+          if (dodge > 0) {
+            const amount = dodgeFactor * influence;
+            data[idx] = Math.min(255, r + (255 - r) * amount);
+            data[idx + 1] = Math.min(255, g + (255 - g) * amount);
+            data[idx + 2] = Math.min(255, b + (255 - b) * amount);
+          }
+
+          // Apply burn (darken highlights)
+          if (burn > 0) {
+            const amount = burnFactor * influence;
+            data[idx] = Math.max(0, r - r * amount);
+            data[idx + 1] = Math.max(0, g - g * amount);
+            data[idx + 2] = Math.max(0, b - b * amount);
+          }
+        }
+      }
+    }
+  }
+
+  private applyClarity(
+    data: Uint8ClampedArray,
+    width: number,
+    height: number,
+    faceBounds: { xMin: number; yMin: number; xMax: number; yMax: number; width: number; height: number },
+    clarity: number
+  ) {
+    const clarityFactor = clarity / 100;
+
+    // Create a copy of the data for edge detection
+    const original = new Uint8ClampedArray(data);
+
+    for (let y = Math.floor(faceBounds.yMin) + 1; y < Math.ceil(faceBounds.yMax) - 1; y++) {
+      for (let x = Math.floor(faceBounds.xMin) + 1; x < Math.ceil(faceBounds.xMax) - 1; x++) {
+        if (x <= 0 || x >= width - 1 || y <= 0 || y >= height - 1) continue;
+
+        const idx = (y * width + x) * 4;
+
+        // Simple unsharp mask / edge detection
+        for (let c = 0; c < 3; c++) {
+          const center = original[idx + c];
+          const top = original[((y - 1) * width + x) * 4 + c];
+          const bottom = original[((y + 1) * width + x) * 4 + c];
+          const left = original[(y * width + (x - 1)) * 4 + c];
+          const right = original[(y * width + (x + 1)) * 4 + c];
+
+          const average = (top + bottom + left + right) / 4;
+          const edge = center - average;
+
+          let newValue = center + edge * clarityFactor;
+          data[idx + c] = Math.max(0, Math.min(255, newValue));
+        }
+      }
+    }
+  }
+
+  private applyContrast(
+    data: Uint8ClampedArray,
+    width: number,
+    height: number,
+    faceBounds: { xMin: number; yMin: number; xMax: number; yMax: number; width: number; height: number },
+    contrast: number
+  ) {
+    const contrastFactor = (contrast + 100) / 100;
+    const factor = (259 * (contrastFactor * 100 + 255)) / (255 * (259 - contrastFactor * 100));
+
+    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
+      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        const idx = (y * width + x) * 4;
+
+        for (let c = 0; c < 3; c++) {
+          const value = data[idx + c];
+          const newValue = factor * (value - 128) + 128;
+          data[idx + c] = Math.max(0, Math.min(255, newValue));
+        }
+      }
+    }
   }
 
   reset() {

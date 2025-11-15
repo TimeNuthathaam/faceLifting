@@ -25,6 +25,11 @@ export default function Home() {
     forehead: 0,
     cheekbones: 0,
     faceWidth: 0,
+    // Lighting adjustments
+    dodge: 0,
+    burn: 0,
+    clarity: 0,
+    contrast: 0,
   });
 
   // Initialize face detection model
@@ -165,6 +170,10 @@ export default function Home() {
       forehead: 0,
       cheekbones: 0,
       faceWidth: 0,
+      dodge: 0,
+      burn: 0,
+      clarity: 0,
+      contrast: 0,
     };
     setAdjustments(resetAdjustments);
 
