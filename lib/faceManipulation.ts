@@ -342,7 +342,10 @@ export class FaceManipulator {
     dodge: number,
     burn: number
   ) {
-    // Define target areas for dodge/burn based on where light naturally hits
+    // Step 1: Analyze the actual image to find bright areas (highlights)
+    const brightnessMap = this.analyzeBrightness(data, width, height, faceBounds);
+
+    // Step 2: Get landmark-based target areas for reference
     const targetAreas = this.getTargetAreas(landmarks);
 
     for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
@@ -357,47 +360,50 @@ export class FaceManipulator {
         // Calculate luminance (perceived brightness)
         const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
 
-        // Determine if this pixel is in highlights, midtones, or shadows
-        const isHighlight = luminance > 170;
-        const isMidtone = luminance >= 85 && luminance <= 170;
+        // Get brightness level from analysis (0 to 1, where 1 = brightest)
+        const brightnessLevel = brightnessMap[idx / 4] || 0;
 
-        // Calculate influence from target areas
-        let areaInfluence = 0;
+        // Calculate landmark-based influence
+        let landmarkInfluence = 0;
         for (const area of targetAreas) {
           const dx = x - area.x;
           const dy = y - area.y;
           const distance = Math.sqrt(dx * dx + dy * dy);
 
           if (distance < area.radius) {
-            // Smoother falloff using cosine interpolation
             const normalizedDist = distance / area.radius;
             const cosineWeight = (Math.cos(normalizedDist * Math.PI) + 1) / 2;
             const influence = cosineWeight * area.intensity;
-            areaInfluence = Math.max(areaInfluence, influence);
+            landmarkInfluence = Math.max(landmarkInfluence, influence);
           }
         }
 
-        // Apply Burn (darken highlights and midtones)
-        if (burn > 0 && areaInfluence > 0) {
-          const burnIntensity = (burn / 100) * areaInfluence;
+        // Combine brightness-based and landmark-based detection
+        // Brightness-based is primary for BURN (to target actual highlights)
+        // Landmark-based is primary for DODGE (for artistic control)
+        const burnInfluence = Math.max(brightnessLevel * 0.8, landmarkInfluence * 0.4);
+        const dodgeInfluence = Math.max(landmarkInfluence * 0.7, brightnessLevel * 0.3);
 
-          // Target highlights and upper midtones more strongly
+        // Apply Burn (darken bright areas to remove studio lighting)
+        if (burn > 0 && burnInfluence > 0.1) {
+          const burnIntensity = (burn / 100) * burnInfluence;
+
+          // Strong effect on very bright pixels (highlights from studio lighting)
           let targetWeight = 0;
-          if (isHighlight) {
-            targetWeight = 1.0; // Full effect on highlights
-          } else if (isMidtone && luminance > 127) {
-            targetWeight = 0.7; // Moderate effect on upper midtones
-          } else if (isMidtone) {
-            targetWeight = 0.3; // Gentle effect on lower midtones
+          if (luminance > 200) {
+            targetWeight = 1.0; // Maximum effect on very bright areas
+          } else if (luminance > 170) {
+            targetWeight = 0.9; // Strong effect on bright highlights
+          } else if (luminance > 140) {
+            targetWeight = 0.6; // Moderate effect on upper midtones
+          } else if (luminance > 100) {
+            targetWeight = 0.3; // Gentle effect on midtones
           }
 
           if (targetWeight > 0) {
-            // Use multiply blending mode (professional burn technique)
+            // Multiply blending mode with adaptive intensity
             const finalIntensity = burnIntensity * targetWeight;
-
-            // Multiply blend: result = base * blend
-            // For burning, we multiply with a dark value (1 - intensity)
-            const multiplier = 1 - (finalIntensity * 0.6); // 0.6 for more control
+            const multiplier = 1 - (finalIntensity * 0.7); // Increased from 0.6 for stronger effect
 
             data[idx] = Math.max(0, Math.round(r * multiplier));
             data[idx + 1] = Math.max(0, Math.round(g * multiplier));
@@ -405,38 +411,33 @@ export class FaceManipulator {
           }
         }
 
-        // Apply Dodge (lighten highlights and midtones)
-        if (dodge > 0 && areaInfluence > 0) {
-          const dodgeIntensity = (dodge / 100) * areaInfluence;
+        // Apply Dodge (lighten for artistic enhancement)
+        if (dodge > 0 && dodgeInfluence > 0.1) {
+          const dodgeIntensity = (dodge / 100) * dodgeInfluence;
 
-          // Target highlights and midtones
+          // Best on upper midtones, avoid overexposed areas
           let targetWeight = 0;
-          if (isHighlight) {
-            targetWeight = 0.8; // Good effect on highlights
-          } else if (isMidtone && luminance > 127) {
-            targetWeight = 1.0; // Best effect on upper midtones
-          } else if (isMidtone) {
-            targetWeight = 0.7; // Moderate effect on lower midtones
+          if (luminance > 200) {
+            targetWeight = 0.3; // Minimal on very bright (already bright)
+          } else if (luminance > 140) {
+            targetWeight = 0.7; // Moderate on highlights
+          } else if (luminance > 100) {
+            targetWeight = 1.0; // Maximum on upper midtones
+          } else if (luminance > 70) {
+            targetWeight = 0.8; // Good on midtones
           }
 
           if (targetWeight > 0) {
-            // Use screen blending mode (professional dodge technique)
             const finalIntensity = dodgeIntensity * targetWeight;
 
-            // Screen blend: result = 1 - (1 - base) * (1 - blend)
-            // For dodging, we screen with white
+            // Screen blending mode
             const invR = 255 - r;
             const invG = 255 - g;
             const invB = 255 - b;
 
-            const screenR = 255 - (invR * (1 - finalIntensity * 0.7));
-            const screenG = 255 - (invG * (1 - finalIntensity * 0.7));
-            const screenB = 255 - (invB * (1 - finalIntensity * 0.7));
-
-            // Re-read current values in case burn was applied
-            const currentR = data[idx];
-            const currentG = data[idx + 1];
-            const currentB = data[idx + 2];
+            const screenR = 255 - (invR * (1 - finalIntensity * 0.6));
+            const screenG = 255 - (invG * (1 - finalIntensity * 0.6));
+            const screenB = 255 - (invB * (1 - finalIntensity * 0.6));
 
             data[idx] = Math.min(255, Math.round(screenR));
             data[idx + 1] = Math.min(255, Math.round(screenG));
@@ -445,6 +446,114 @@ export class FaceManipulator {
         }
       }
     }
+  }
+
+  private analyzeBrightness(
+    data: Uint8ClampedArray,
+    width: number,
+    height: number,
+    faceBounds: { xMin: number; yMin: number; xMax: number; yMax: number; width: number; height: number }
+  ): Float32Array {
+    const brightnessMap = new Float32Array(width * height);
+
+    // Step 1: Calculate luminance for each pixel in face area
+    const luminanceValues: number[] = [];
+    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
+      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        const idx = (y * width + x) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        luminanceValues.push(luminance);
+      }
+    }
+
+    // Step 2: Calculate statistics (find the bright areas)
+    luminanceValues.sort((a, b) => a - b);
+    const count = luminanceValues.length;
+    const p75 = luminanceValues[Math.floor(count * 0.75)]; // 75th percentile
+    const p90 = luminanceValues[Math.floor(count * 0.90)]; // 90th percentile
+    const max = luminanceValues[count - 1];
+
+    // Step 3: Create brightness map (normalize based on face's own brightness distribution)
+    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
+      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        const idx = (y * width + x) * 4;
+        const mapIdx = y * width + x;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        // Normalize brightness relative to face's brightness distribution
+        let brightnessLevel = 0;
+        if (luminance > p90) {
+          // Top 10% brightest - these are likely studio light spots
+          brightnessLevel = 0.8 + ((luminance - p90) / (max - p90)) * 0.2; // 0.8 to 1.0
+        } else if (luminance > p75) {
+          // 75th to 90th percentile - bright areas
+          brightnessLevel = 0.5 + ((luminance - p75) / (p90 - p75)) * 0.3; // 0.5 to 0.8
+        } else if (luminance > 150) {
+          // Generally bright
+          brightnessLevel = 0.3 + ((luminance - 150) / (p75 - 150)) * 0.2; // 0.3 to 0.5
+        } else if (luminance > 100) {
+          // Somewhat bright
+          brightnessLevel = ((luminance - 100) / 50) * 0.3; // 0 to 0.3
+        }
+
+        brightnessMap[mapIdx] = Math.min(1.0, Math.max(0, brightnessLevel));
+      }
+    }
+
+    // Step 4: Apply Gaussian blur to brightness map for smoother transitions
+    const blurred = this.gaussianBlurMap(brightnessMap, width, height, faceBounds, 3);
+
+    return blurred;
+  }
+
+  private gaussianBlurMap(
+    map: Float32Array,
+    width: number,
+    height: number,
+    faceBounds: { xMin: number; yMin: number; xMax: number; yMax: number; width: number; height: number },
+    radius: number
+  ): Float32Array {
+    const result = new Float32Array(width * height);
+
+    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
+      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        let sum = 0;
+        let weightSum = 0;
+
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              if (distance <= radius) {
+                const weight = Math.exp(-(distance * distance) / (2 * radius * radius));
+                sum += map[ny * width + nx] * weight;
+                weightSum += weight;
+              }
+            }
+          }
+        }
+
+        result[y * width + x] = weightSum > 0 ? sum / weightSum : 0;
+      }
+    }
+
+    return result;
   }
 
   private getTargetAreas(landmarks: FaceLandmarks): Array<{ x: number; y: number; radius: number; intensity: number }> {
