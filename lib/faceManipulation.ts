@@ -315,12 +315,9 @@ export class FaceManipulator {
     const imageData = this.ctx.getImageData(0, 0, width, height);
     const data = imageData.data;
 
-    // Define highlight areas (where light hits the face naturally)
-    const highlightAreas = this.getHighlightAreas(landmarks);
-
-    // Apply Dodge & Burn
+    // Apply Dodge & Burn first (works on original colors)
     if (dodge !== 0 || burn !== 0) {
-      this.applyDodgeBurn(data, width, height, highlightAreas, faceBounds, dodge, burn);
+      this.applyDodgeBurnAdvanced(data, width, height, landmarks, faceBounds, dodge, burn);
     }
 
     // Apply Clarity (edge enhancement/softening)
@@ -328,7 +325,7 @@ export class FaceManipulator {
       this.applyClarity(data, width, height, faceBounds, clarity);
     }
 
-    // Apply Contrast
+    // Apply Contrast last
     if (contrast !== 0) {
       this.applyContrast(data, width, height, faceBounds, contrast);
     }
@@ -336,41 +333,210 @@ export class FaceManipulator {
     this.ctx.putImageData(imageData, 0, 0);
   }
 
-  private getHighlightAreas(landmarks: FaceLandmarks): Array<{ x: number; y: number; radius: number; intensity: number }> {
+  private applyDodgeBurnAdvanced(
+    data: Uint8ClampedArray,
+    width: number,
+    height: number,
+    landmarks: FaceLandmarks,
+    faceBounds: { xMin: number; yMin: number; xMax: number; yMax: number; width: number; height: number },
+    dodge: number,
+    burn: number
+  ) {
+    // Define target areas for dodge/burn based on where light naturally hits
+    const targetAreas = this.getTargetAreas(landmarks);
+
+    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
+      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        const idx = (y * width + x) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+
+        // Calculate luminance (perceived brightness)
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        // Determine if this pixel is in highlights, midtones, or shadows
+        const isHighlight = luminance > 170;
+        const isMidtone = luminance >= 85 && luminance <= 170;
+
+        // Calculate influence from target areas
+        let areaInfluence = 0;
+        for (const area of targetAreas) {
+          const dx = x - area.x;
+          const dy = y - area.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          if (distance < area.radius) {
+            // Smoother falloff using cosine interpolation
+            const normalizedDist = distance / area.radius;
+            const cosineWeight = (Math.cos(normalizedDist * Math.PI) + 1) / 2;
+            const influence = cosineWeight * area.intensity;
+            areaInfluence = Math.max(areaInfluence, influence);
+          }
+        }
+
+        // Apply Burn (darken highlights and midtones)
+        if (burn > 0 && areaInfluence > 0) {
+          const burnIntensity = (burn / 100) * areaInfluence;
+
+          // Target highlights and upper midtones more strongly
+          let targetWeight = 0;
+          if (isHighlight) {
+            targetWeight = 1.0; // Full effect on highlights
+          } else if (isMidtone && luminance > 127) {
+            targetWeight = 0.7; // Moderate effect on upper midtones
+          } else if (isMidtone) {
+            targetWeight = 0.3; // Gentle effect on lower midtones
+          }
+
+          if (targetWeight > 0) {
+            // Use multiply blending mode (professional burn technique)
+            const finalIntensity = burnIntensity * targetWeight;
+
+            // Multiply blend: result = base * blend
+            // For burning, we multiply with a dark value (1 - intensity)
+            const multiplier = 1 - (finalIntensity * 0.6); // 0.6 for more control
+
+            data[idx] = Math.max(0, Math.round(r * multiplier));
+            data[idx + 1] = Math.max(0, Math.round(g * multiplier));
+            data[idx + 2] = Math.max(0, Math.round(b * multiplier));
+          }
+        }
+
+        // Apply Dodge (lighten highlights and midtones)
+        if (dodge > 0 && areaInfluence > 0) {
+          const dodgeIntensity = (dodge / 100) * areaInfluence;
+
+          // Target highlights and midtones
+          let targetWeight = 0;
+          if (isHighlight) {
+            targetWeight = 0.8; // Good effect on highlights
+          } else if (isMidtone && luminance > 127) {
+            targetWeight = 1.0; // Best effect on upper midtones
+          } else if (isMidtone) {
+            targetWeight = 0.7; // Moderate effect on lower midtones
+          }
+
+          if (targetWeight > 0) {
+            // Use screen blending mode (professional dodge technique)
+            const finalIntensity = dodgeIntensity * targetWeight;
+
+            // Screen blend: result = 1 - (1 - base) * (1 - blend)
+            // For dodging, we screen with white
+            const invR = 255 - r;
+            const invG = 255 - g;
+            const invB = 255 - b;
+
+            const screenR = 255 - (invR * (1 - finalIntensity * 0.7));
+            const screenG = 255 - (invG * (1 - finalIntensity * 0.7));
+            const screenB = 255 - (invB * (1 - finalIntensity * 0.7));
+
+            // Re-read current values in case burn was applied
+            const currentR = data[idx];
+            const currentG = data[idx + 1];
+            const currentB = data[idx + 2];
+
+            data[idx] = Math.min(255, Math.round(screenR));
+            data[idx + 1] = Math.min(255, Math.round(screenG));
+            data[idx + 2] = Math.min(255, Math.round(screenB));
+          }
+        }
+      }
+    }
+  }
+
+  private getTargetAreas(landmarks: FaceLandmarks): Array<{ x: number; y: number; radius: number; intensity: number }> {
     const areas: Array<{ x: number; y: number; radius: number; intensity: number }> = [];
     const keypoints = landmarks.keypoints;
 
-    // Forehead (top center)
+    // Upper forehead - primary highlight area
     if (keypoints[10]) {
-      areas.push({ x: keypoints[10].x, y: keypoints[10].y, radius: 40, intensity: 1.0 });
+      areas.push({
+        x: keypoints[10].x,
+        y: keypoints[10].y - 20, // Slightly above landmark
+        radius: 60,
+        intensity: 1.0
+      });
     }
 
-    // Nose bridge
+    // Center forehead
+    if (keypoints[151]) {
+      areas.push({
+        x: keypoints[151].x,
+        y: keypoints[151].y,
+        radius: 50,
+        intensity: 0.95
+      });
+    }
+
+    // Nose bridge - strong highlight
     if (keypoints[6]) {
-      areas.push({ x: keypoints[6].x, y: keypoints[6].y, radius: 25, intensity: 0.9 });
+      areas.push({
+        x: keypoints[6].x,
+        y: keypoints[6].y,
+        radius: 30,
+        intensity: 0.95
+      });
     }
 
-    // Nose tip
+    // Nose tip - very strong highlight
     if (keypoints[4]) {
-      areas.push({ x: keypoints[4].x, y: keypoints[4].y, radius: 20, intensity: 0.8 });
+      areas.push({
+        x: keypoints[4].x,
+        y: keypoints[4].y,
+        radius: 25,
+        intensity: 1.0
+      });
     }
 
-    // Left cheekbone
+    // Left cheekbone - moderate highlight
     if (keypoints[234]) {
-      areas.push({ x: keypoints[234].x, y: keypoints[234].y, radius: 35, intensity: 0.85 });
+      areas.push({
+        x: keypoints[234].x,
+        y: keypoints[234].y,
+        radius: 45,
+        intensity: 0.85
+      });
     }
 
-    // Right cheekbone
+    // Right cheekbone - moderate highlight
     if (keypoints[454]) {
-      areas.push({ x: keypoints[454].x, y: keypoints[454].y, radius: 35, intensity: 0.85 });
+      areas.push({
+        x: keypoints[454].x,
+        y: keypoints[454].y,
+        radius: 45,
+        intensity: 0.85
+      });
     }
 
-    // Chin
+    // Chin - subtle highlight
     if (keypoints[152]) {
-      areas.push({ x: keypoints[152].x, y: keypoints[152].y, radius: 30, intensity: 0.7 });
+      areas.push({
+        x: keypoints[152].x,
+        y: keypoints[152].y,
+        radius: 35,
+        intensity: 0.75
+      });
+    }
+
+    // Upper lip area (optional, subtle)
+    if (keypoints[0]) {
+      areas.push({
+        x: keypoints[0].x,
+        y: keypoints[0].y,
+        radius: 20,
+        intensity: 0.6
+      });
     }
 
     return areas;
+  }
+
+  private getHighlightAreas(landmarks: FaceLandmarks): Array<{ x: number; y: number; radius: number; intensity: number }> {
+    // Keep for backward compatibility, but use getTargetAreas instead
+    return this.getTargetAreas(landmarks);
   }
 
   private applyDodgeBurn(
@@ -382,53 +548,8 @@ export class FaceManipulator {
     dodge: number,
     burn: number
   ) {
-    const dodgeFactor = dodge / 100;
-    const burnFactor = burn / 100;
-
-    for (let y = Math.floor(faceBounds.yMin); y < Math.ceil(faceBounds.yMax); y++) {
-      for (let x = Math.floor(faceBounds.xMin); x < Math.ceil(faceBounds.xMax); x++) {
-        if (x < 0 || x >= width || y < 0 || y >= height) continue;
-
-        const idx = (y * width + x) * 4;
-
-        // Calculate influence from all highlight areas
-        let influence = 0;
-        for (const area of highlightAreas) {
-          const dx = x - area.x;
-          const dy = y - area.y;
-          const distance = Math.sqrt(dx * dx + dy * dy);
-
-          if (distance < area.radius) {
-            const falloff = 1 - (distance / area.radius);
-            const gaussian = Math.exp(-(distance * distance) / (2 * (area.radius / 2) * (area.radius / 2)));
-            influence = Math.max(influence, gaussian * area.intensity * falloff);
-          }
-        }
-
-        if (influence > 0) {
-          // Get original RGB values
-          const r = data[idx];
-          const g = data[idx + 1];
-          const b = data[idx + 2];
-
-          // Apply dodge (lighten highlights)
-          if (dodge > 0) {
-            const amount = dodgeFactor * influence;
-            data[idx] = Math.min(255, r + (255 - r) * amount);
-            data[idx + 1] = Math.min(255, g + (255 - g) * amount);
-            data[idx + 2] = Math.min(255, b + (255 - b) * amount);
-          }
-
-          // Apply burn (darken highlights)
-          if (burn > 0) {
-            const amount = burnFactor * influence;
-            data[idx] = Math.max(0, r - r * amount);
-            data[idx + 1] = Math.max(0, g - g * amount);
-            data[idx + 2] = Math.max(0, b - b * amount);
-          }
-        }
-      }
-    }
+    // Deprecated - kept for compatibility but not used
+    // Use applyDodgeBurnAdvanced instead
   }
 
   private applyClarity(
