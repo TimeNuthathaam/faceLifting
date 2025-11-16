@@ -1,0 +1,17 @@
+{
+  "name": "Face Lifting Editor",
+  "short_name": "Face Editor",
+  "description": "AI-Powered Portrait Editor with face lifting features",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ],
+  "theme_color": "#a855f7",
+  "background_color": "#ffffff",
+  "display": "standalone",
+  "start_url": "/",
+  "orientation": "portrait"
+}
